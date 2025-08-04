@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reconnaissance results (sensitive data)
+*/results/
+*/output/
+*_results.txt
+*_output.txt
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+temp_*
+
+# Sensitive data
+*.key
+*.pem
+*.p12
+secrets.txt
+passwords.txt
+api_keys.txt
+
+# Tool-specific
+nmap_results/
+recon_*/
+scan_*/

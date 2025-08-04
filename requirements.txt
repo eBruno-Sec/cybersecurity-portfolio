@@ -1,0 +1,16 @@
+# Core dependencies for cybersecurity tools
+requests>=2.31.0
+urllib3>=2.0.0
+dnspython>=2.4.0
+
+# For advanced network operations (optional)
+scapy>=2.5.0
+
+# For JSON handling and data analysis
+# Built-in modules used: json, base64, subprocess, threading, concurrent.futures
+
+# System requirements (install separately):
+# - subfinder (go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest)
+# - amass (https://github.com/OWASP/Amass)
+# - nmap (apt-get install nmap / brew install nmap)
+# - curl (usually pre-installed)
