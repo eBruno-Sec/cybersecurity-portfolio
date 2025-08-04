@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Andromalius Reconnaissance Script v2.0
+Andromalius Reconnaissance Script
 Named after the demon of secrets and surveillance from Ars Goetia
 
 Production-ready automated Phase 1 reconnaissance for bug bounty hunting
