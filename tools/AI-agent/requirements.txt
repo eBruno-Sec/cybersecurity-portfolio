@@ -1,0 +1,15 @@
+# AI Cybersecurity Agent Requirements
+# Install with: pip install -r requirements.txt
+
+# Core LangChain dependencies
+langchain>=0.1.0
+langchain-groq>=0.0.1
+
+# LLM and Agent support
+langchain-community>=0.0.20
+
+# Optional but recommended for better performance
+langchain-core>=0.1.0
+
+# Note: No additional system packages required
+# The agent manages Kali Linux tools independently
