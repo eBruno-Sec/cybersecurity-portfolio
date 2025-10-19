@@ -1,4 +1,4 @@
-I'll update the README.md to include the virtual environment installation instructions based on the error you encountered. Here's the improved version:
+
 
 ```markdown
 # SecureAgent v2.0.0 - Production-Grade AI Pentesting Assistant
