@@ -1,3 +1,6 @@
+I'll update the README.md to include the virtual environment installation instructions based on the error you encountered. Here's the improved version:
+
+```markdown
 # SecureAgent v2.0.0 - Production-Grade AI Pentesting Assistant
 
 A secure, auditable, and professional AI-powered pentesting automation tool that uses natural language to orchestrate security testing tools.
@@ -26,32 +29,83 @@ SecureAgent is designed for professional penetration testers, bug bounty hunters
 
 ### Installation
 
-1. **Install Python dependencies:**
+#### Option A: Virtual Environment (Recommended for Kali/Debian/Ubuntu)
+
+If you're on Kali Linux or get an "externally-managed-environment" error, use a virtual environment:
+
 ```bash
+# 1. Create virtual environment
+python3 -m venv ~/secureagent-env
+
+# 2. Activate it
+source ~/secureagent-env/bin/activate
+
+# 3. Install dependencies
 pip install langchain langchain-groq langchain-community pydantic
+
+# 4. Download and setup the agent
+mkdir -p ~/bin
+# Copy agent.py to ~/bin/secureagent
+chmod +x ~/bin/secureagent
+
+# 5. Add to PATH
+echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
-2. **Download the agent:**
+**Important**: When using a virtual environment, you must activate it before running SecureAgent:
+```bash
+source ~/secureagent-env/bin/activate
+secureagent "your command"
+```
+
+To make this automatic, add to your `~/.zshrc` or `~/.bashrc`:
+```bash
+# Auto-activate SecureAgent environment
+alias secureagent='source ~/secureagent-env/bin/activate && secureagent'
+```
+
+#### Option B: System-wide Installation
+
+For other systems or if you prefer system-wide installation:
+
+```bash
+# Install dependencies
+pip install langchain langchain-groq langchain-community pydantic
+
+# If you get "externally-managed-environment" error:
+pip install --break-system-packages langchain langchain-groq langchain-community pydantic
+```
+
+**Note**: Using `--break-system-packages` is not recommended as it can interfere with system Python packages. Virtual environment is safer.
+
+### Setup
+
+1. **Download the agent:**
 ```bash
 mkdir -p ~/bin
 # Copy agent.py to ~/bin/secureagent
 chmod +x ~/bin/secureagent
 ```
 
-3. **Add to PATH:**
+2. **Add to PATH:**
 ```bash
 echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-4. **Get your free Groq API key:**
+3. **Get your free Groq API key:**
    - Visit https://console.groq.com
    - Sign up (no credit card required)
    - Create an API key
    - Save it for first run
 
-5. **First run:**
+4. **First run:**
 ```bash
+# If using virtual environment, activate it first:
+source ~/secureagent-env/bin/activate
+
+# Then run SecureAgent:
 secureagent "hello"
 # You'll be prompted to enter your API key
 ```
@@ -222,14 +276,23 @@ export SECUREAGENT_MODEL="llama-3.3-70b-versatile"
 
 ## 🐛 Troubleshooting
 
+### "externally-managed-environment" error
+This is common on Kali Linux, Debian 12+, and Ubuntu 23.04+. **Solution**: Use a virtual environment (see Installation Option A above).
+
 ### Command not found
 ```bash
 export PATH="$HOME/bin:$PATH"
 echo 'export PATH="$HOME/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
 ```
 
 ### Missing dependencies
 ```bash
+# If using virtual environment:
+source ~/secureagent-env/bin/activate
+pip install --upgrade langchain langchain-groq langchain-community pydantic
+
+# If system-wide:
 pip install --upgrade langchain langchain-groq langchain-community pydantic
 ```
 
@@ -245,6 +308,16 @@ export GROQ_API_KEY="gsk_your_actual_key"
 ### View logs for debugging
 ```bash
 tail -f ~/.secureagent/logs/agent_*.log
+```
+
+### Virtual environment not activating
+```bash
+# Make sure you have venv installed:
+sudo apt install python3-venv
+
+# Then recreate the environment:
+python3 -m venv ~/secureagent-env
+source ~/secureagent-env/bin/activate
 ```
 
 ## 📊 Architecture
@@ -301,9 +374,20 @@ MIT License - See code header for details
 - Groq API: https://console.groq.com
 - LangChain Docs: https://python.langchain.com/docs/
 - Kali Linux: https://www.kali.org/
+- Kali Python Packages Guide: https://www.kali.org/docs/general-use/python3-external-packages/
 - HackTheBox: https://hackthebox.eu
 - TryHackMe: https://tryhackme.com
 
 ---
 
 **Remember**: With great power comes great responsibility. Always obtain proper authorization before scanning any systems.
+```
+
+The key improvements:
+1. **Dedicated virtual environment section** as Option A (recommended)
+2. **Clear instructions** for the "externally-managed-environment" error
+3. **Helpful alias** to auto-activate the venv when running secureagent
+4. **New troubleshooting entry** specifically for this common Kali error
+5. **Link to Kali's official documentation** on Python packages
+
+This should help users avoid the confusion you just encountered!
