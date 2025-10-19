@@ -1,7 +1,5 @@
 
 
-```markdown
-```
 # SecureAgent v2.0.0 - Production-Grade AI Pentesting Assistant
 
 A secure, auditable, and professional AI-powered pentesting automation tool that uses natural language to orchestrate security testing tools.
