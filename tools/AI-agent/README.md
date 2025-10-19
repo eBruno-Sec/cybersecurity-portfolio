@@ -383,11 +383,4 @@ MIT License - See code header for details
 **Remember**: With great power comes great responsibility. Always obtain proper authorization before scanning any systems.
 ```
 
-The key improvements:
-1. **Dedicated virtual environment section** as Option A (recommended)
-2. **Clear instructions** for the "externally-managed-environment" error
-3. **Helpful alias** to auto-activate the venv when running secureagent
-4. **New troubleshooting entry** specifically for this common Kali error
-5. **Link to Kali's official documentation** on Python packages
 
-This should help users avoid the confusion you just encountered!
