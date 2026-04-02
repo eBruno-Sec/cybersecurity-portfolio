@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>RECON // Passive DNS Intelligence</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Syne:wght@700;800&display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://unpkg.com/docx@8.5.0/build/index.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg0:#0a0a0a;--bg1:#1a1a1a;--bg2:#2a2a2a;--red:#dc2626;--red-light:#ef4444;--white:#f5f5f5;--gray:#a3a3a3;--gray-dim:#6b7280;--gray-dark:#4b5563;--green:#22c55e;--amber:#f59e0b;--orange:#f97316;--font-mono:'JetBrains Mono',monospace;--font-display:'Syne',sans-serif}
+html{background:var(--bg0);color:var(--white);font-family:var(--font-mono)}
+body{min-height:100vh;background:var(--bg0)}
+::selection{background:var(--red);color:#fff}
+::-webkit-scrollbar{width:6px}
+::-webkit-scrollbar-track{background:var(--bg0)}
+::-webkit-scrollbar-thumb{background:var(--bg2);border-radius:3px}
+::-webkit-scrollbar-thumb:hover{background:var(--gray-dark)}
+@keyframes scanline{0%{transform:translateY(-100%)}100%{transform:translateY(100vh)}}
+@keyframes pulse-red{0%,100%{opacity:1}50%{opacity:.4}}
+@keyframes progress-bar{0%{width:0}100%{width:100%}}
+@keyframes fade-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes glow{0%,100%{box-shadow:0 0 5px rgba(220,38,38,.3)}50%{box-shadow:0 0 20px rgba(220,38,38,.6)}}
+.animate-fade-in{animation:fade-in .3s ease-out both}
+.section-content{overflow:hidden;transition:max-height .4s cubic-bezier(.4,0,.2,1),opacity .3s ease,padding .3s ease}
+.section-content.collapsed{max-height:0!important;opacity:0;padding-top:0!important;padding-bottom:0!important}
+.section-content.expanded{opacity:1}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot-gray{background:#4b5563}.dot-green{background:#22c55e}.dot-yellow{background:#f59e0b}.dot-red{background:#ef4444}
+.finding-card{border-left:3px solid;transition:all .2s ease}
+.finding-card:hover{background:rgba(255,255,255,.02)}
+input:focus{outline:none}
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:600;letter-spacing:.5px;font-family:var(--font-mono);line-height:1.4}
+.export-btn{transition:all .15s ease}
+.export-btn:hover{transform:translateY(-1px)}
+.export-btn:active{transform:translateY(0)}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useCallback,useRef,useEffect}=React;
+
+/* ═══════════════════ CONSTANTS ═══════════════════ */
+const DKIM_SELECTORS=['default','selector1','selector2','google','k1','k2','s1','s2','mx','smtp','mail','email','pm','dkim','dkim1'];
+const SEVERITY_ORDER={CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3,INFO:4};
+const SEVERITY_COLORS={CRITICAL:'#ef4444',HIGH:'#f97316',MEDIUM:'#f59e0b',LOW:'#22c55e',INFO:'#6b7280'};
+const CONF_COLORS={HIGH:'#a3a3a3',MEDIUM:'#6b7280',MED:'#6b7280',LOW:'#4b5563'};
+const RECON_ORDER={CRITICAL:0,HIGH:1,MEDIUM:2,LOW:3};
+
+/* ═══════════════════ VENDOR PATTERNS ═══════════════════ */
+const TXT_VENDORS=[
+{p:'paloaltonetworks-site-verification',name:'Palo Alto Networks',cat:'Security',rv:'CRITICAL',note:'Palo Alto firewall/NGFW likely in use — advanced threat prevention active'},
+{p:'duo_sso_verification',name:'Duo Security (MFA)',cat:'Security/Identity',rv:'CRITICAL',note:'Duo MFA in use — account takeover attempts face second-factor requirement'},
+{p:'safebreach-domain-verification',name:'SafeBreach',cat:'Security',rv:'CRITICAL',note:'Target runs continuous breach simulation — security posture is actively tested'},
+{p:'knowbe4',name:'KnowBe4',cat:'Security Training',rv:'CRITICAL',note:'KnowBe4 — phishing simulation active, security awareness training in place'},
+{p:'censys-domain-verification',name:'Censys',cat:'Attack Surface Mgmt',rv:'CRITICAL',note:''},
+{p:'bugcrowd-verification',name:'Bugcrowd',cat:'Bug Bounty',rv:'CRITICAL',note:'Active bug bounty program detected — review program scope before testing'},
+{p:'hackerone-verification',name:'HackerOne',cat:'Bug Bounty',rv:'CRITICAL',note:'Active bug bounty program detected — review program scope before testing'},
+{p:'intigriti-verification',name:'Intigriti',cat:'Bug Bounty',rv:'CRITICAL',note:'Active bug bounty program detected — review program scope before testing'},
+{p:'synack-verification',name:'Synack',cat:'Bug Bounty',rv:'CRITICAL',note:'Active bug bounty program detected — review program scope before testing'},
+{p:'cloudflare_dashboard_sso',name:'Cloudflare',cat:'Identity/CDN',rv:'HIGH',note:''},
+{p:'atlassian-domain-verification',name:'Atlassian (Jira/Confluence)',cat:'Productivity',rv:'HIGH',note:''},
+{p:'atlassian-sending-domain-verification',name:'Atlassian',cat:'Productivity',rv:'HIGH',note:''},
+{p:'hcp-domain-verification',name:'HashiCorp',cat:'Infrastructure',rv:'HIGH',note:''},
+{p:'jamf-site-verification',name:'Jamf (MDM)',cat:'Device Mgmt',rv:'HIGH',note:''},
+{p:'docker-verification',name:'Docker Hub',cat:'Infrastructure',rv:'HIGH',note:''},
+{p:'Dynatrace-site-verification',name:'Dynatrace (APM)',cat:'Monitoring',rv:'HIGH',note:''},
+{p:'hpe-greenlake-domain-verification',name:'HPE GreenLake',cat:'Cloud',rv:'HIGH',note:''},
+{p:'ms-domain-verification',name:'Microsoft 365',cat:'Productivity',rv:'MEDIUM',note:''},
+{p:'MS=ms',name:'Microsoft 365',cat:'Productivity',rv:'MEDIUM',note:''},
+{p:'google-site-verification',name:'Google Workspace',cat:'Productivity',rv:'MEDIUM',note:''},
+{p:'notion-domain-verification',name:'Notion',cat:'Productivity',rv:'MEDIUM',note:''},
+{p:'teamviewer-sso-verification',name:'TeamViewer',cat:'Remote Access',rv:'MEDIUM',note:''},
+{p:'logmein-verification',name:'LogMeIn',cat:'Remote Access',rv:'MEDIUM',note:''},
+{p:'logmein-domain-confirmation',name:'LogMeIn',cat:'Remote Access',rv:'MEDIUM',note:''},
+{p:'zoom_verify',name:'Zoom',cat:'Communication',rv:'MEDIUM',note:''},
+{p:'postman-domain-verification',name:'Postman',cat:'Dev Tools',rv:'MEDIUM',note:''},
+{p:'jetbrains-domain-verification',name:'JetBrains',cat:'Dev Tools',rv:'MEDIUM',note:''},
+{p:'linear-domain-verification',name:'Linear',cat:'Dev Tools',rv:'MEDIUM',note:''},
+{p:'openai-domain-verification',name:'OpenAI',cat:'AI',rv:'MEDIUM',note:''},
+{p:'lovable_verification',name:'Lovable',cat:'AI',rv:'MEDIUM',note:''},
+{p:'beautifulai-site-verification',name:'Beautiful.ai',cat:'Productivity',rv:'MEDIUM',note:''},
+{p:'flexera-domain-verification',name:'Flexera',cat:'IT Asset Mgmt',rv:'MEDIUM',note:''},
+{p:'SFMC-',name:'Salesforce Marketing Cloud',cat:'CRM',rv:'LOW',note:''},
+{p:'salesforce',name:'Salesforce',cat:'CRM',rv:'LOW',note:''},
+{p:'hubspotemail',name:'HubSpot',cat:'CRM',rv:'LOW',note:''},
+{p:'drift-domain-verification',name:'Drift',cat:'CRM',rv:'LOW',note:''},
+{p:'klaviyo-site-verification',name:'Klaviyo',cat:'Marketing',rv:'LOW',note:''},
+{p:'mixpanel-domain-verify',name:'Mixpanel',cat:'Analytics',rv:'LOW',note:''},
+{p:'twilio-domain-verification',name:'Twilio',cat:'Communication',rv:'LOW',note:''},
+{p:'mandrill_verify',name:'Mandrill/Mailchimp',cat:'Email',rv:'LOW',note:''},
+{p:'workplace-domain-verification',name:'Meta Workplace',cat:'Communication',rv:'LOW',note:''},
+{p:'docusign=',name:'DocuSign',cat:'Legal',rv:'LOW',note:''},
+{p:'docusign',name:'DocuSign',cat:'Legal',rv:'LOW',note:''},
+{p:'adobe-idp-site-verification',name:'Adobe',cat:'Productivity',rv:'LOW',note:''},
+{p:'adobe-sign-verification',name:'Adobe Sign',cat:'Legal',rv:'LOW',note:''},
+{p:'stripe-verification',name:'Stripe',cat:'Payments',rv:'LOW',note:''},
+{p:'box-domain-verification',name:'Box',cat:'Storage',rv:'LOW',note:''},
+{p:'amazonses:',name:'Amazon SES',cat:'Email',rv:'LOW',note:''},
+{p:'apple-domain-verification',name:'Apple',cat:'Generic',rv:'LOW',note:''},
+{p:'facebook-domain-verification',name:'Facebook',cat:'Social',rv:'LOW',note:''},
+{p:'onetrust-domain-verification',name:'OneTrust',cat:'Compliance',rv:'LOW',note:''},
+{p:'formstack-domain-verification',name:'Formstack',cat:'Forms',rv:'LOW',note:''},
+{p:'canva-site-verification',name:'Canva',cat:'Design',rv:'LOW',note:''},
+{p:'figma-domain-verification',name:'Figma',cat:'Design',rv:'LOW',note:''},
+{p:'smartsheet-site-validation',name:'Smartsheet',cat:'Productivity',rv:'LOW',note:''},
+{p:'autodesk-domain-verification',name:'Autodesk',cat:'Design',rv:'LOW',note:''},
+];
+
+const SPF_VENDORS=[
+{p:'_spf.google.com',name:'Google Workspace',cat:'Email',rv:'MEDIUM'},
+{p:'googlemail',name:'Google Workspace',cat:'Email',rv:'MEDIUM'},
+{p:'spf.protection.outlook.com',name:'Microsoft 365',cat:'Email',rv:'MEDIUM'},
+{p:'sendgrid.net',name:'SendGrid',cat:'Email',rv:'LOW'},
+{p:'amazonses.com',name:'Amazon SES',cat:'Email',rv:'LOW'},
+{p:'mailchimp.com',name:'Mailchimp',cat:'Email',rv:'LOW'},
+{p:'mcsv.net',name:'Mailchimp',cat:'Email',rv:'LOW'},
+{p:'mailgun.org',name:'Mailgun',cat:'Email',rv:'LOW'},
+{p:'zendesk.com',name:'Zendesk',cat:'Support',rv:'LOW'},
+{p:'salesforce.com',name:'Salesforce',cat:'CRM',rv:'LOW'},
+{p:'_spf.salesforce',name:'Salesforce',cat:'CRM',rv:'LOW'},
+{p:'hubspotemail.net',name:'HubSpot',cat:'CRM',rv:'LOW'},
+{p:'ppe-hosted.com',name:'Proofpoint',cat:'Email Security',rv:'HIGH'},
+{p:'pphosted.com',name:'Proofpoint',cat:'Email Security',rv:'HIGH'},
+{p:'knowbe4.com',name:'KnowBe4',cat:'Security Training',rv:'CRITICAL'},
+{p:'ultipro.com',name:'UKG/UltiPro',cat:'HR',rv:'LOW'},
+{p:'ultiprohcm.com',name:'UKG/UltiPro',cat:'HR',rv:'LOW'},
+{p:'qualtrics.com',name:'Qualtrics',cat:'Surveys',rv:'LOW'},
+{p:'sendcloud.org',name:'Sendcloud',cat:'Email',rv:'LOW'},
+{p:'secureserver.net',name:'GoDaddy',cat:'Hosting',rv:'LOW'},
+{p:'vali.email',name:'Valimail',cat:'Email Auth',rv:'MEDIUM'},
+];
+
+const MX_VENDORS=[
+{p:'aspmx.l.google.com',name:'Google Workspace',cat:'Email'},
+{p:'googlemail.com',name:'Google Workspace',cat:'Email'},
+{p:'mail.protection.outlook.com',name:'Microsoft 365',cat:'Email'},
+{p:'ppe-hosted.com',name:'Proofpoint',cat:'Email Security',note:'Email routed through 3rd-party security gateway — direct-to-MX bypass testing may yield different results'},
+{p:'pphosted.com',name:'Proofpoint',cat:'Email Security',note:'Email routed through 3rd-party security gateway — direct-to-MX bypass testing may yield different results'},
+{p:'mxlogin.com',name:'Proofpoint Essentials',cat:'Email Security',note:'Email routed through 3rd-party security gateway — direct-to-MX bypass testing may yield different results'},
+{p:'mx.zoho.com',name:'Zoho Mail',cat:'Email'},
+{p:'mxbspam.com',name:'MXGuardDog',cat:'Email Security'},
+];
+
+const SUB_CATEGORIES=[
+{label:'CI/CD & DevOps',severity:'HIGH',patterns:['jenkins','gitlab','github','drone','travis','circleci','teamcity','bamboo','buildkite','argocd','artifactory','nexus','sonar','harbor','chef','puppet','ansible','devbuilds','devops']},
+{label:'Security Infrastructure',severity:'HIGH',patterns:['vpn','remote','citrix','sso','adfs','idp','iam','mfa','2fa','auth','saml','federation','okta','ping','keycloak','clearpass','activedirectory','pki','certmgr','radius']},
+{label:'Admin & Management',severity:'HIGH',patterns:['admin','manage','mgmt','portal','cpanel','plesk','phpmyadmin','rancher','kibana','grafana','prometheus','tableau','splunk','servicenow','jira','confluence']},
+{label:'Exposed Dev/Test',severity:'MEDIUM',patterns:['dev','staging','test','qa','uat','sandbox','demo','beta','preview','preprod','canary','rc','nightly','experimental','stage','stg','sit','lab','labs']},
+{label:'Data & Storage',severity:'MEDIUM',patterns:['db','database','sql','mongo','redis','elastic','s3','backup','archive','ftp','sftp','files','storage','cdn','bucket','vault']},
+{label:'Payment & Financial',severity:'MEDIUM',patterns:['tokenizer','payment','billing','pay','invoice','finance']},
+{label:'Communication',severity:'LOW',patterns:['mail','webmail','smtp','imap','pop','mx','email','autodiscover','lyncdiscover','sip','voip']},
+];
+
+/* ═══════════════════ HELPERS ═══════════════════ */
+function cleanDomain(d){return d.replace(/^https?:\/\//i,'').replace(/^www\./i,'').replace(/\/.*$/,'').trim().toLowerCase()}
+
+async function dohQuery(domain,type){
+  try{
+    const r=await fetch(`https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=${type}`);
+    if(!r.ok)return null;
+    const j=await r.json();
+    return j.Answer||[];
+  }catch{return null}
+}
+
+async function fetchJSON(url){
+  const r=await fetch(url);
+  if(!r.ok)throw new Error(r.status);
+  return r.json();
+}
+
+function daysBetween(a,b){return Math.round((b-a)/(1000*60*60*24))}
+function parseDateSafe(s){if(!s)return null;const d=new Date(s);return isNaN(d)?null:d}
+
+function classifySub(name,domain){
+  const sub=name.replace(`.${domain}`,'').toLowerCase();
+  const parts=sub.split('.');
+  const flat=parts.join('');
+  // CTF check
+  if(/ctf|wargame|challenge|hackme/i.test(flat))return{cat:'CTF / Public',severity:'INFO'};
+  // Internal hostname
+  if(/^[A-Z0-9]{4,}[0-9]{2,}$/i.test(parts[0])&&/[A-Z]/.test(parts[0])&&/[0-9]/.test(parts[0]))
+    return{cat:'Internal Hostname Leak',severity:'MEDIUM',note:'Internal hostname schema leaked via certificate transparency'};
+  for(const c of SUB_CATEGORIES){
+    for(const p of c.patterns){
+      if(parts.some(pt=>pt===p||pt.startsWith(p)||pt.endsWith(p)))
+        return{cat:c.label,severity:c.severity};
+    }
+  }
+  return{cat:'Other',severity:'INFO'};
+}
+
+/* ═══════════════════ INTELLIGENCE ENGINE ═══════════════════ */
+function fingerprint(txtRecords,spfRecord,mxRecords){
+  const vendors=new Map();
+  const addV=(name,cat,rv,note)=>{
+    const key=name+'|'+cat;
+    if(!vendors.has(key)||RECON_ORDER[rv]<RECON_ORDER[vendors.get(key).rv])
+      vendors.set(key,{name,cat,rv,note:note||''});
+  };
+  // TXT
+  if(txtRecords){
+    const allTxt=txtRecords.map(r=>(r.data||'').replace(/"/g,'')).join('\n');
+    for(const v of TXT_VENDORS){
+      if(allTxt.toLowerCase().includes(v.p.toLowerCase()))addV(v.name,v.cat,v.rv,v.note);
+    }
+  }
+  // SPF includes
+  if(spfRecord){
+    const spfLower=spfRecord.toLowerCase();
+    for(const v of SPF_VENDORS){
+      if(spfLower.includes(v.p.toLowerCase()))addV(v.name,v.cat,v.rv,'');
+    }
+  }
+  // MX
+  if(mxRecords){
+    for(const mx of mxRecords){
+      const d=(mx.data||'').toLowerCase();
+      for(const v of MX_VENDORS){
+        if(d.includes(v.p))addV(v.name,v.cat,v.rv||'MEDIUM',v.note||'');
+      }
+    }
+  }
+  return [...vendors.values()].sort((a,b)=>RECON_ORDER[a.rv]-RECON_ORDER[b.rv]);
+}
+
+function analyzeFindings(data){
+  const findings=[];
+  const add=(sev,conf,label,detail,rec)=>findings.push({severity:sev,confidence:conf,label,detail,recommendation:rec});
+
+  // Email security
+  if(!data.dmarc)add('CRITICAL','HIGH','No DMARC Record','No DMARC policy was found for this domain. Any attacker can send email impersonating this domain with no policy enforcement at receiving mail servers.','Publish a DMARC record at _dmarc.'+data.domain+'. Start with p=none and rua= for monitoring, then escalate to p=quarantine and p=reject.');
+  else{
+    const pol=(data.dmarc.match(/p=([^;]+)/)||[])[1];
+    if(pol==='none')add('HIGH','HIGH','DMARC Policy Set to None','DMARC exists but is set to p=none, which only monitors without enforcing. Spoofed emails will still be delivered.','Escalate DMARC policy from p=none → p=quarantine → p=reject after reviewing aggregate reports.');
+    if(pol==='quarantine')add('MEDIUM','HIGH','DMARC Policy Set to Quarantine','DMARC is set to quarantine, which flags spoofed emails but does not outright reject them. Some spoofed mail may still reach inboxes.','Consider escalating to p=reject once confident in SPF/DKIM alignment.');
+    const pct=(data.dmarc.match(/pct=([0-9]+)/)||[])[1];
+    if(pct&&parseInt(pct)<100)add('MEDIUM','HIGH',`DMARC Enforced on Only ${pct}% of Messages`,`The pct= tag is set to ${pct}, meaning DMARC policy only applies to ${pct}% of messages. The remaining ${100-parseInt(pct)}% bypass enforcement.`,'Increase pct= to 100 once confident in alignment rates.');
+    if(!/rua=/i.test(data.dmarc))add('LOW','MEDIUM','DMARC Reporting Not Configured','No rua= tag found in the DMARC record. Without aggregate reporting, you have no visibility into who is sending email as your domain.','Add rua=mailto:dmarc-reports@'+data.domain+' to receive aggregate DMARC reports.');
+    if(data.spfRaw&&pol==='reject'){
+      if(/~all/.test(data.spfRaw))add('HIGH','HIGH','SPF/DMARC Policy Conflict','DMARC is set to p=reject but SPF uses ~all (softfail). Receiving servers that weight SPF failures may still deliver spoofed mail, undermining DMARC enforcement.','Change SPF mechanism from ~all to -all to align with DMARC reject policy.');
+    }
+  }
+  if(!data.spfRaw)add('HIGH','HIGH','No SPF Record','No SPF record found. Without SPF, there is no mechanism to declare which servers are authorized to send email for this domain.','Publish an SPF record listing authorized sending IPs and include directives. End with -all.');
+  else{
+    if(/\+all/.test(data.spfRaw))add('CRITICAL','HIGH','SPF Permits All Senders (+all)','The SPF record ends with +all, which explicitly authorizes every server on the internet to send email as this domain. This completely nullifies SPF.','Replace +all with -all immediately.');
+    if(/\?all/.test(data.spfRaw))add('CRITICAL','HIGH','SPF Neutral Policy (?all)','The SPF record uses ?all (neutral), which provides no meaningful authorization check. Any server can send mail as this domain without SPF failure.','Replace ?all with -all.');
+    if(/~all/.test(data.spfRaw)&&!(data.dmarc&&/p=reject/i.test(data.dmarc)))add('HIGH','HIGH','SPF Softfail (~all)','SPF uses ~all (softfail), which marks unauthorized senders but does not reject them. Most mail systems will still deliver these messages.','Change ~all to -all for hard enforcement, or pair with DMARC p=reject.');
+    // lookup count
+    const lookups=(data.spfRaw.match(/include:|a:|mx:|ptr:/gi)||[]).length;
+    if(lookups>10)add('HIGH','HIGH','SPF Exceeds 10-Lookup Limit',`SPF record contains ${lookups} DNS lookup mechanisms. The RFC 7208 limit is 10. Exceeding this causes a permerror — SPF is effectively broken for this domain.`,'Flatten SPF record by replacing include: chains with direct IP ranges, or use an SPF flattening service.');
+    else if(lookups>8)add('MEDIUM','MEDIUM','SPF Approaching Lookup Limit',`SPF record uses ${lookups} of 10 allowed DNS lookups. Adding more include: directives will break SPF.`,'Monitor SPF lookup count and consider flattening includes.');
+  }
+  if(!data.dkimResults||data.dkimResults.every(d=>!d.found))add('MEDIUM','MEDIUM','No DKIM Records Found','No DKIM records were found across '+DKIM_SELECTORS.length+' common selectors. DKIM provides cryptographic email authentication — without it, email integrity cannot be verified.','Configure DKIM signing for all outbound email services and publish corresponding public keys.');
+  if(!data.caaRecords||data.caaRecords.length===0)add('MEDIUM','MEDIUM','No CAA Records','No Certificate Authority Authorization records found. Any CA can issue certificates for this domain, increasing risk of fraudulent certificate issuance.','Publish CAA records specifying which CAs are authorized to issue certificates for this domain.');
+  // BIMI
+  if(data.bimi){
+    if(/a=/.test(data.bimi)&&data.bimi.match(/a=([^;]+)/)?.[1]?.trim())
+      add('LOW','HIGH','BIMI with VMC Verified','BIMI record includes a Verified Mark Certificate — strong email authentication posture demonstrated.','No action needed. This indicates a mature email security program.');
+    else if(data.bimi)
+      add('LOW','MEDIUM','BIMI Configured Without VMC','BIMI record exists but has no VMC (Verified Mark Certificate). Logo display will be limited to supporting clients.','Consider obtaining a VMC for broader BIMI support.');
+  }
+
+  // WHOIS
+  if(data.whois){
+    const exp=parseDateSafe(data.whois.expiration);
+    if(exp){
+      const daysLeft=daysBetween(new Date(),exp);
+      if(daysLeft<0)add('CRITICAL','HIGH','Domain Expired','This domain has passed its expiration date. It may become available for hostile registration or is currently in a grace period.','Renew the domain immediately or verify auto-renewal status with your registrar.');
+      else if(daysLeft<30)add('CRITICAL','HIGH','Domain Expiring Within 30 Days',`Domain expires in ${daysLeft} days (${exp.toISOString().split('T')[0]}). If not renewed, it can be registered by an attacker.`,'Renew immediately and enable auto-renewal.');
+      else if(daysLeft<90)add('HIGH','HIGH','Domain Expiring Within 90 Days',`Domain expires in ${daysLeft} days. This is within the renewal risk window.`,'Renew the domain and enable auto-renewal.');
+    }
+    const created=parseDateSafe(data.whois.registration);
+    if(created){
+      const age=daysBetween(created,new Date());
+      if(age<365)add('MEDIUM','MEDIUM','Recently Registered Domain',`Domain was registered ${age} days ago. New domains have a higher association with phishing infrastructure and disposable campaigns.`,'If this is a legitimate domain, ensure it builds reputation through proper SPF/DKIM/DMARC and consistent sending patterns.');
+    }
+    const updated=parseDateSafe(data.whois.lastChanged);
+    if(updated){
+      const ago=daysBetween(updated,new Date());
+      if(ago<30)add('LOW','LOW','Recent WHOIS Update',`WHOIS data was updated ${ago} days ago, indicating recent infrastructure changes.`,'Review recent DNS and registrar changes to ensure they were authorized.');
+    }
+  }
+
+  // Subdomains
+  if(data.subdomains){
+    const classified=data.subdomains.map(s=>({name:s,...classifySub(s,data.domain)}));
+    const cicd=classified.filter(s=>s.cat==='CI/CD & DevOps');
+    const secInfra=classified.filter(s=>s.cat==='Security Infrastructure');
+    const admin=classified.filter(s=>s.cat==='Admin & Management');
+    const devTest=classified.filter(s=>s.cat==='Exposed Dev/Test');
+    const payment=classified.filter(s=>s.cat==='Payment & Financial');
+    const internal=classified.filter(s=>s.cat==='Internal Hostname Leak');
+    if(cicd.length)add('CRITICAL','MEDIUM','CI/CD Infrastructure Exposed',`${cicd.length} CI/CD subdomain(s) discovered via certificate transparency: ${cicd.slice(0,5).map(s=>s.name).join(', ')}${cicd.length>5?'…':''}. These may expose build pipelines, source code, or deployment credentials.`,'Restrict CI/CD endpoints to VPN/internal networks. Remove unnecessary public DNS entries and certificates.');
+    if(secInfra.length)add('CRITICAL','MEDIUM','Security Infrastructure Exposed',`${secInfra.length} security infrastructure subdomain(s) found: ${secInfra.slice(0,5).map(s=>s.name).join(', ')}${secInfra.length>5?'…':''}. VPN portals, SSO endpoints, and identity providers are high-value targets.`,'Ensure security infrastructure is not unnecessarily exposed. Use network segmentation and restrict access.');
+    if(admin.length)add('HIGH','MEDIUM','Admin/Management Panels Exposed',`${admin.length} admin or management subdomain(s) discovered: ${admin.slice(0,5).map(s=>s.name).join(', ')}${admin.length>5?'…':''}. These may expose dashboards, monitoring tools, or issue trackers.`,'Place admin panels behind VPN or IP allowlisting. Require MFA for all administrative access.');
+    if(devTest.length)add('MEDIUM','MEDIUM','Dev/Test Environments Exposed',`${devTest.length} development or testing subdomain(s) found: ${devTest.slice(0,5).map(s=>s.name).join(', ')}${devTest.length>5?'…':''}. These often have weaker security controls and may contain test credentials.`,'Remove public DNS entries for non-production environments or restrict access via VPN.');
+    if(payment.length)add('MEDIUM','HIGH','Payment Infrastructure Exposed',`${payment.length} payment-related subdomain(s) found: ${payment.map(s=>s.name).join(', ')}. Payment endpoints are high-value targets for financial fraud.`,'Ensure PCI DSS compliance. Restrict payment endpoints and monitor for unauthorized access.');
+    if(internal.length)add('MEDIUM','MEDIUM','Internal Hostnames Leaked via CT Logs',`${internal.length} internal hostname(s) leaked through certificate transparency: ${internal.slice(0,5).map(s=>s.name).join(', ')}. These reveal internal naming conventions and server inventory.`,'Use internal CAs for internal-only hostnames. Review certificate issuance policies to prevent leaking internal names.');
+    if(data.subdomains.length>30)add('LOW','HIGH','Large Subdomain Footprint',`${data.subdomains.length} unique subdomains discovered. A large attack surface increases the probability of misconfigured or forgotten assets.`,'Conduct a subdomain inventory audit. Decommission unused subdomains and associated DNS entries.');
+  }
+
+  // Deduplicate
+  const seen=new Set();
+  const deduped=findings.filter(f=>{
+    if(f.severity==='INFO')return false;
+    if(seen.has(f.label))return false;
+    seen.add(f.label);return true;
+  });
+  return deduped.sort((a,b)=>SEVERITY_ORDER[a.severity]-SEVERITY_ORDER[b.severity]);
+}
+
+/* ═══════════════════ SCAN ENGINE ═══════════════════ */
+async function runScan(domain,onProgress){
+  const results={domain,timestamp:new Date().toISOString()};
+  const steps=[
+    {label:'Querying DNS A/AAAA records…',fn:async()=>{
+      const[a,aaaa]=await Promise.allSettled([dohQuery(domain,'A'),dohQuery(domain,'AAAA')]);
+      results.aRecords=a.status==='fulfilled'?a.value:null;
+      results.aaaaRecords=aaaa.status==='fulfilled'?aaaa.value:null;
+    }},
+    {label:'Querying MX / NS records…',fn:async()=>{
+      const[mx,ns]=await Promise.allSettled([dohQuery(domain,'MX'),dohQuery(domain,'NS')]);
+      results.mxRecords=mx.status==='fulfilled'?mx.value:null;
+      results.nsRecords=ns.status==='fulfilled'?ns.value:null;
+    }},
+    {label:'Querying TXT / CAA records…',fn:async()=>{
+      const[txt,caa]=await Promise.allSettled([dohQuery(domain,'TXT'),dohQuery(domain,'CAA')]);
+      results.txtRecords=txt.status==='fulfilled'?txt.value:null;
+      results.caaRecords=caa.status==='fulfilled'?caa.value:null;
+      if(results.txtRecords){
+        const spfRec=results.txtRecords.find(r=>(r.data||'').replace(/"/g,'').startsWith('v=spf1'));
+        results.spfRaw=spfRec?(spfRec.data||'').replace(/"/g,''):null;
+      }
+    }},
+    {label:'Querying DMARC…',fn:async()=>{
+      const r=await dohQuery('_dmarc.'+domain,'TXT');
+      if(r&&r.length)results.dmarc=(r[0].data||'').replace(/"/g,'');
+      else results.dmarc=null;
+    }},
+    {label:'Checking DKIM selectors…',fn:async()=>{
+      const checks=DKIM_SELECTORS.map(s=>dohQuery(s+'._domainkey.'+domain,'TXT').then(r=>({selector:s,found:!!(r&&r.length),data:r&&r.length?(r[0].data||'').replace(/"/g,''):''})));
+      const settled=await Promise.allSettled(checks);
+      results.dkimResults=settled.map(s=>s.status==='fulfilled'?s.value:{selector:'?',found:false,data:''});
+    }},
+    {label:'Checking BIMI…',fn:async()=>{
+      const r=await dohQuery('default._bimi.'+domain,'TXT');
+      results.bimi=r&&r.length?(r[0].data||'').replace(/"/g,''):null;
+    }},
+    {label:'Fetching WHOIS via RDAP…',fn:async()=>{
+      try{
+        const j=await fetchJSON('https://rdap.org/domain/'+domain);
+        const evts=j.events||[];
+        const get=t=>{const e=evts.find(ev=>ev.eventAction===t);return e?e.eventDate:null;};
+        const ent=(j.entities||[]).find(e=>(e.roles||[]).includes('registrar'));
+        results.whois={
+          name:j.ldhName||domain,
+          status:(j.status||[]).join(', '),
+          registration:get('registration'),
+          expiration:get('expiration'),
+          lastChanged:get('last changed'),
+          registrar:ent?(ent.vcardArray?.[1]?.find(v=>v[0]==='fn')?.[3]||ent.handle||'Unknown'):'Unknown',
+          nameservers:(j.nameservers||[]).map(n=>n.ldhName).filter(Boolean)
+        };
+        // Registrar intel
+        const reg=(results.whois.registrar||'').toLowerCase();
+        if(/markmonitor|csc corporate|csc global/i.test(reg))results.whois.registrarNote='Large enterprise registrar — indicates significant organization';
+        else if(/privacy|proxy|whoisguard|domains by proxy|contact privacy/i.test(reg))results.whois.registrarNote='Privacy/proxy registration active';
+      }catch{results.whois=null}
+    }},
+    {label:'Enumerating subdomains via crt.sh…',fn:async()=>{
+      try{
+        const r=await fetch('https://crt.sh/?q=%25.'+encodeURIComponent(domain)+'&output=json');
+        if(!r.ok){results.subdomains=null;return}
+        const j=await r.json();
+        const subs=new Set();
+        j.forEach(e=>{
+          (e.name_value||'').split('\n').forEach(n=>{
+            n=n.trim().toLowerCase();
+            if(n&&!n.startsWith('*')&&n.endsWith(domain))subs.add(n);
+          });
+        });
+        results.subdomains=[...subs].sort();
+      }catch{results.subdomains=null}
+    }},
+  ];
+
+  for(let i=0;i<steps.length;i++){
+    onProgress({step:i+1,total:steps.length,label:steps[i].label});
+    try{await steps[i].fn()}catch{}
+  }
+
+  // Post-processing
+  results.vendors=fingerprint(results.txtRecords,results.spfRaw,results.mxRecords);
+  results.findings=analyzeFindings(results);
+  if(results.subdomains){
+    results.subdomainsByCategory={};
+    results.subdomains.forEach(s=>{
+      const c=classifySub(s,domain);
+      if(!results.subdomainsByCategory[c.cat])results.subdomainsByCategory[c.cat]=[];
+      results.subdomainsByCategory[c.cat].push({name:s,severity:c.severity,note:c.note||''});
+    });
+  }
+  return results;
+}
+
+/* ═══════════════════ EXPORT ENGINE ═══════════════════ */
+function generatePlainText(data){
+  let t=`PASSIVE RECON REPORT\n${'═'.repeat(50)}\nDomain: ${data.domain}\nTimestamp: ${data.timestamp}\n\n`;
+  // Findings summary
+  const counts={CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0};
+  data.findings.forEach(f=>counts[f.severity]=(counts[f.severity]||0)+1);
+  t+=`FINDINGS SUMMARY\n${'─'.repeat(40)}\nCRITICAL: ${counts.CRITICAL}  |  HIGH: ${counts.HIGH}  |  MEDIUM: ${counts.MEDIUM}  |  LOW: ${counts.LOW}\n\n`;
+  t+=`DETAILED FINDINGS\n${'─'.repeat(40)}\n`;
+  data.findings.forEach(f=>{
+    t+=`\n[${f.severity}] [CONF: ${f.confidence}] ${f.label}\n${f.detail}\nRecommendation: ${f.recommendation}\n`;
+  });
+  t+=`\n\nTECH STACK\n${'─'.repeat(40)}\n`;
+  (data.vendors||[]).forEach(v=>{t+=`[${v.rv}] ${v.name} | ${v.cat}${v.note?' — '+v.note:''}\n`});
+  t+=`\n\nWHOIS INTELLIGENCE\n${'─'.repeat(40)}\n`;
+  if(data.whois){
+    t+=`Registrar: ${data.whois.registrar}\nRegistered: ${data.whois.registration||'N/A'}\nExpires: ${data.whois.expiration||'N/A'}\nLast Updated: ${data.whois.lastChanged||'N/A'}\nStatus: ${data.whois.status}\n`;
+    if(data.whois.registrarNote)t+=`Note: ${data.whois.registrarNote}\n`;
+  }else t+='Unavailable\n';
+  t+=`\n\nDNS RECORDS\n${'─'.repeat(40)}\n`;
+  ['aRecords','aaaaRecords','mxRecords','nsRecords','txtRecords','caaRecords'].forEach(k=>{
+    t+=`\n${k.replace('Records','').toUpperCase()}:\n`;
+    if(data[k])data[k].forEach(r=>t+=`  ${r.data||JSON.stringify(r)}\n`);
+    else t+='  Unavailable\n';
+  });
+  t+=`\n\nEMAIL SECURITY\n${'─'.repeat(40)}\n`;
+  t+=`SPF: ${data.spfRaw||'Not found'}\nDMARC: ${data.dmarc||'Not found'}\nBIMI: ${data.bimi||'Not found'}\n`;
+  t+=`\nDKIM Selectors Checked:\n`;
+  (data.dkimResults||[]).forEach(d=>t+=`  ${d.selector}: ${d.found?'FOUND — '+d.data:'not found'}\n`);
+  t+=`\n\nSUBDOMAINS (${(data.subdomains||[]).length})\n${'─'.repeat(40)}\n`;
+  if(data.subdomainsByCategory){
+    Object.entries(data.subdomainsByCategory).forEach(([cat,subs])=>{
+      t+=`\n[${cat}]\n`;
+      subs.forEach(s=>t+=`  ${s.name}${s.note?' — '+s.note:''}\n`);
+    });
+  }else t+='Unavailable\n';
+  return t;
+}
+
+async function generateDocx(data){
+  const{Document,Packer,Paragraph,Table,TableRow,TableCell,TextRun,WidthType,AlignmentType,HeadingLevel,BorderStyle}=docx;
+  const hdr=(text,level=HeadingLevel.HEADING_1)=>new Paragraph({heading:level,spacing:{before:300,after:100},children:[new TextRun({text,bold:true,font:'Arial'})]});
+  const para=(text)=>new Paragraph({spacing:{after:80},children:[new TextRun({text,font:'Arial',size:20})]});
+  const cellP=(text,bold=false)=>new Paragraph({children:[new TextRun({text:text||'',font:'Arial',size:18,bold})]});
+  const mkCell=(text,bold=false)=>new TableCell({children:[cellP(text,bold)],width:{size:0,type:WidthType.AUTO}});
+
+  const children=[
+    hdr('Passive Recon Report'),
+    para(`Domain: ${data.domain}`),
+    para(`Generated: ${new Date(data.timestamp).toLocaleString()}`),
+    hdr('Findings',HeadingLevel.HEADING_2),
+  ];
+
+  // Findings table
+  if(data.findings.length){
+    const fRows=[new TableRow({children:['Severity','Confidence','Finding','Detail','Recommendation'].map(h=>mkCell(h,true))})];
+    data.findings.forEach(f=>fRows.push(new TableRow({children:[mkCell(f.severity),mkCell('CONF: '+f.confidence),mkCell(f.label),mkCell(f.detail),mkCell(f.recommendation)]})));
+    children.push(new Table({rows:fRows,width:{size:100,type:WidthType.PERCENTAGE}}));
+  }
+
+  children.push(hdr('Tech Stack',HeadingLevel.HEADING_2));
+  if(data.vendors&&data.vendors.length){
+    const vRows=[new TableRow({children:['Vendor','Category','Recon Value','Notes'].map(h=>mkCell(h,true))})];
+    data.vendors.forEach(v=>vRows.push(new TableRow({children:[mkCell(v.name),mkCell(v.cat),mkCell(v.rv),mkCell(v.note)]})));
+    children.push(new Table({rows:vRows,width:{size:100,type:WidthType.PERCENTAGE}}));
+  }
+
+  children.push(hdr('WHOIS Intelligence',HeadingLevel.HEADING_2));
+  if(data.whois){
+    children.push(para(`Registrar: ${data.whois.registrar}`));
+    children.push(para(`Registered: ${data.whois.registration||'N/A'}`));
+    children.push(para(`Expires: ${data.whois.expiration||'N/A'}`));
+    children.push(para(`Status: ${data.whois.status}`));
+    if(data.whois.registrarNote)children.push(para(`Note: ${data.whois.registrarNote}`));
+  }else children.push(para('Unavailable'));
+
+  children.push(hdr('DNS Records',HeadingLevel.HEADING_2));
+  ['aRecords','aaaaRecords','mxRecords','nsRecords','txtRecords','caaRecords'].forEach(k=>{
+    children.push(para(`${k.replace('Records','').toUpperCase()}:`));
+    if(data[k])data[k].forEach(r=>children.push(para(`  ${(r.data||'').replace(/"/g,'')}`)));
+    else children.push(para('  Unavailable'));
+  });
+
+  children.push(hdr('Email Security',HeadingLevel.HEADING_2));
+  children.push(para(`SPF: ${data.spfRaw||'Not found'}`));
+  children.push(para(`DMARC: ${data.dmarc||'Not found'}`));
+  children.push(para(`BIMI: ${data.bimi||'Not found'}`));
+  children.push(para('DKIM Selectors Checked:'));
+  (data.dkimResults||[]).forEach(d=>children.push(para(`  ${d.selector}: ${d.found?'FOUND':'not found'}`)));
+
+  children.push(hdr('Subdomains ('+((data.subdomains||[]).length)+')',HeadingLevel.HEADING_2));
+  if(data.subdomainsByCategory){
+    Object.entries(data.subdomainsByCategory).forEach(([cat,subs])=>{
+      children.push(para(`[${cat}]`));
+      subs.forEach(s=>children.push(para(`  ${s.name}`)));
+    });
+  }
+
+  const doc=new Document({sections:[{children}]});
+  return await Packer.toBlob(doc);
+}
+
+/* ═══════════════════ COMPONENTS ═══════════════════ */
+function Badge({severity}){
+  return <span className="badge" style={{background:SEVERITY_COLORS[severity]||'#4b5563',color:severity==='LOW'?'#000':'#fff'}}>{severity}</span>;
+}
+function ConfBadge({confidence}){
+  const key=confidence==='MEDIUM'?'MED':confidence;
+  return <span className="badge" style={{background:CONF_COLORS[key]||'#4b5563',color:'#fff'}}>CONF: {key}</span>;
+}
+
+function Section({num,title,status,defaultOpen,children}){
+  const[open,setOpen]=useState(defaultOpen||false);
+  const contentRef=useRef(null);
+  const[maxH,setMaxH]=useState(defaultOpen?'none':'0px');
+  useEffect(()=>{
+    if(open&&contentRef.current)setMaxH(contentRef.current.scrollHeight+'px');
+    else setMaxH('0px');
+  },[open,children]);
+  const dotClass=status==='red'?'dot-red':status==='yellow'?'dot-yellow':status==='green'?'dot-green':'dot-gray';
+  return(
+    <div className="mb-3">
+      <button onClick={()=>setOpen(!open)} className="w-full flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-white/5 transition-colors" style={{background:'rgba(255,255,255,0.02)'}}>
+        <span className={`dot ${dotClass}`}/>
+        <span className="text-xs tracking-widest font-semibold" style={{fontFamily:'var(--font-mono)',color:'var(--gray)'}}>
+          {String(num).padStart(2,'0')} — {title}
+        </span>
+        <span className="ml-auto text-xs" style={{color:'var(--gray-dim)'}}>{open?'▲':'▼'}</span>
+      </button>
+      <div ref={contentRef} className={`section-content ${open?'expanded':'collapsed'}`} style={{maxHeight:open?maxH:'0px',paddingTop:open?'12px':'0',paddingBottom:open?'12px':'0'}}>
+        <div className="px-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function FindingCard({finding}){
+  const[showFix,setShowFix]=useState(false);
+  return(
+    <div className="finding-card rounded-lg p-4 mb-2" style={{borderColor:SEVERITY_COLORS[finding.severity],background:'rgba(255,255,255,0.02)'}}>
+      <div className="flex items-center gap-2 flex-wrap mb-2">
+        <Badge severity={finding.severity}/>
+        <ConfBadge confidence={finding.confidence}/>
+        <span className="text-sm font-semibold ml-1">{finding.label}</span>
+      </div>
+      <p className="text-xs leading-relaxed" style={{color:'var(--gray)'}}>{finding.detail}</p>
+      <button onClick={()=>setShowFix(!showFix)} className="text-xs mt-2 hover:opacity-80 transition-opacity" style={{color:'var(--red-light)',fontFamily:'var(--font-mono)'}}>
+        {showFix?'Hide Fix ▲':'Show Fix ▼'}
+      </button>
+      {showFix&&<p className="text-xs mt-2 leading-relaxed p-2 rounded" style={{color:'var(--green)',background:'rgba(34,197,94,0.06)'}}>{finding.recommendation}</p>}
+    </div>
+  );
+}
+
+function App(){
+  const[domain,setDomain]=useState('');
+  const[scanning,setScanning]=useState(false);
+  const[progress,setProgress]=useState(null);
+  const[data,setData]=useState(null);
+  const inputRef=useRef(null);
+
+  const handleScan=useCallback(async()=>{
+    const clean=cleanDomain(domain);
+    if(!clean)return;
+    setDomain(clean);
+    setScanning(true);setData(null);setProgress({step:0,total:8,label:'Initializing…'});
+    const result=await runScan(clean,(p)=>setProgress(p));
+    setData(result);setScanning(false);setProgress(null);
+  },[domain]);
+
+  const handleKey=useCallback((e)=>{if(e.key==='Enter')handleScan()},[handleScan]);
+
+  const copyClipboard=useCallback(async()=>{
+    if(!data)return;
+    try{await navigator.clipboard.writeText(generatePlainText(data))}catch{}
+  },[data]);
+  const downloadTxt=useCallback(()=>{
+    if(!data)return;
+    const blob=new Blob([generatePlainText(data)],{type:'text/plain'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`recon_${data.domain}_${Date.now()}.txt`;a.click();
+  },[data]);
+  const downloadDocx=useCallback(async()=>{
+    if(!data)return;
+    try{
+      const blob=await generateDocx(data);
+      const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`recon_${data.domain}_${Date.now()}.docx`;a.click();
+    }catch(e){console.error(e)}
+  },[data]);
+
+  const sectionStatus=useCallback((key)=>{
+    if(!data)return'gray';
+    const sevs=data.findings.map(f=>f.severity);
+    if(key==='whois'){
+      if(data.findings.some(f=>f.label.includes('Expir')&&(f.severity==='CRITICAL'||f.severity==='HIGH')))return'red';
+      if(data.findings.some(f=>f.label.includes('Recently Registered')))return'yellow';
+      return data.whois?'green':'gray';
+    }
+    if(key==='dns')return data.aRecords||data.nsRecords?'green':'gray';
+    if(key==='tech')return data.vendors&&data.vendors.length?'green':'gray';
+    if(key==='email'){
+      if(data.findings.some(f=>(f.label.includes('DMARC')||f.label.includes('SPF'))&&(f.severity==='CRITICAL')))return'red';
+      if(data.findings.some(f=>(f.label.includes('DMARC')||f.label.includes('SPF')||f.label.includes('DKIM'))&&(f.severity==='HIGH')))return'red';
+      if(data.findings.some(f=>(f.label.includes('DMARC')||f.label.includes('SPF')||f.label.includes('DKIM')||f.label.includes('CAA'))&&(f.severity==='MEDIUM')))return'yellow';
+      return'green';
+    }
+    if(key==='subs'){
+      if(data.findings.some(f=>(f.label.includes('CI/CD')||f.label.includes('Security Infrastructure'))&&f.severity==='CRITICAL'))return'red';
+      if(data.findings.some(f=>f.label.includes('Admin')&&f.severity==='HIGH'))return'red';
+      if(data.findings.some(f=>(f.label.includes('Dev/Test')||f.label.includes('Payment')||f.label.includes('Internal')||f.label.includes('Footprint'))&&(f.severity==='MEDIUM'||f.severity==='LOW')))return'yellow';
+      return data.subdomains?'green':'gray';
+    }
+    if(key==='findings'){
+      if(data.findings.some(f=>f.severity==='CRITICAL'))return'red';
+      if(data.findings.some(f=>f.severity==='HIGH'))return'red';
+      if(data.findings.some(f=>f.severity==='MEDIUM'))return'yellow';
+      return'green';
+    }
+    return'gray';
+  },[data]);
+
+  const counts=data?data.findings.reduce((a,f)=>{a[f.severity]=(a[f.severity]||0)+1;return a},{CRITICAL:0,HIGH:0,MEDIUM:0,LOW:0}):{};
+
+  return(
+    <div className="min-h-screen" style={{background:'var(--bg0)'}}>
+      {/* Scanline overlay */}
+      {scanning&&<div className="fixed inset-0 pointer-events-none z-50" style={{background:'repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(220,38,38,0.03) 2px,rgba(220,38,38,0.03) 4px)'}}/>}
+      <div className="max-w-4xl mx-auto px-4 py-8 md:py-12">
+        {/* Header */}
+        <div className="mb-8 md:mb-12">
+          <h1 className="text-3xl md:text-5xl font-extrabold tracking-tight mb-2" style={{fontFamily:'var(--font-display)',color:'var(--white)'}}>
+            <span style={{color:'var(--red)'}}>RECON</span> <span style={{color:'var(--gray-dim)',fontSize:'0.5em',verticalAlign:'middle'}}>//</span> <span className="text-lg md:text-2xl" style={{color:'var(--gray)'}}>Passive DNS Intelligence</span>
+          </h1>
+          <div className="h-px w-full mt-4" style={{background:'linear-gradient(90deg,var(--red),transparent)'}}/>
+        </div>
+
+        {/* Input */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+          <div className="flex-1 flex items-center rounded-lg px-4 py-3 border" style={{background:'var(--bg1)',borderColor:'var(--bg2)'}}>
+            <span className="mr-2 text-sm font-bold" style={{color:'var(--red)',fontFamily:'var(--font-mono)'}}>$</span>
+            <input
+              ref={inputRef}
+              type="text"
+              value={domain}
+              onChange={e=>setDomain(e.target.value)}
+              onKeyDown={handleKey}
+              placeholder="target-domain.com"
+              className="flex-1 bg-transparent text-sm"
+              style={{fontFamily:'var(--font-mono)',color:'var(--white)',caretColor:'var(--red)'}}
+              disabled={scanning}
+            />
+          </div>
+          <button
+            onClick={handleScan}
+            disabled={scanning||!domain.trim()}
+            className="export-btn px-6 py-3 rounded-lg text-sm font-bold tracking-wider disabled:opacity-30 transition-all"
+            style={{background:'var(--red)',color:'#fff',fontFamily:'var(--font-mono)',animation:scanning?'glow 1.5s ease-in-out infinite':'none'}}
+          >
+            {scanning?'SCANNING…':'RUN RECON'}
+          </button>
+        </div>
+
+        {/* Progress */}
+        {scanning&&progress&&(
+          <div className="mb-8 animate-fade-in">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs" style={{color:'var(--gray)',fontFamily:'var(--font-mono)'}}>{progress.label}</span>
+              <span className="text-xs" style={{color:'var(--gray-dim)',fontFamily:'var(--font-mono)'}}>{progress.step}/{progress.total}</span>
+            </div>
+            <div className="h-1 rounded-full overflow-hidden" style={{background:'var(--bg2)'}}>
+              <div className="h-full rounded-full transition-all duration-500 ease-out" style={{width:`${(progress.step/progress.total)*100}%`,background:'linear-gradient(90deg,var(--red),var(--red-light))'}}/>
+            </div>
+          </div>
+        )}
+
+        {/* Results */}
+        {data&&(
+          <div className="animate-fade-in">
+            {/* Export buttons */}
+            <div className="flex flex-wrap gap-2 mb-6">
+              <button onClick={copyClipboard} className="export-btn px-4 py-2 rounded text-xs font-semibold" style={{background:'var(--bg2)',color:'var(--white)',fontFamily:'var(--font-mono)'}}>COPY TO CLIPBOARD</button>
+              <button onClick={downloadTxt} className="export-btn px-4 py-2 rounded text-xs font-semibold" style={{background:'var(--bg2)',color:'var(--white)',fontFamily:'var(--font-mono)'}}>DOWNLOAD .TXT</button>
+              <button onClick={downloadDocx} className="export-btn px-4 py-2 rounded text-xs font-semibold" style={{background:'var(--bg2)',color:'var(--white)',fontFamily:'var(--font-mono)'}}>DOWNLOAD .DOCX</button>
+            </div>
+
+            {/* 06 — FINDINGS SUMMARY (open by default, listed first) */}
+            <Section num={6} title="FINDINGS SUMMARY" status={sectionStatus('findings')} defaultOpen={true}>
+              <div className="flex flex-wrap gap-2 mb-4">
+                {[['CRITICAL',counts.CRITICAL],['HIGH',counts.HIGH],['MEDIUM',counts.MEDIUM],['LOW',counts.LOW]].map(([s,c])=>(
+                  <span key={s} className="badge text-xs" style={{background:SEVERITY_COLORS[s],color:s==='LOW'||s==='MEDIUM'?'#000':'#fff'}}>{s}: {c||0}</span>
+                ))}
+              </div>
+              {data.findings.length===0&&<p className="text-xs" style={{color:'var(--green)'}}>No findings generated. Domain appears well-configured.</p>}
+              {data.findings.map((f,i)=><FindingCard key={i} finding={f}/>)}
+            </Section>
+
+            {/* 01 — WHOIS */}
+            <Section num={1} title="WHOIS / REGISTRATION" status={sectionStatus('whois')}>
+              {data.whois?(
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {[
+                    ['Registrar',data.whois.registrar],
+                    ['Status',data.whois.status],
+                    ['Registered',data.whois.registration?new Date(data.whois.registration).toLocaleDateString():'N/A'],
+                    ['Expires',data.whois.expiration?new Date(data.whois.expiration).toLocaleDateString():'N/A'],
+                    ['Last Updated',data.whois.lastChanged?new Date(data.whois.lastChanged).toLocaleDateString():'N/A'],
+                  ].map(([k,v])=>(
+                    <div key={k} className="p-3 rounded" style={{background:'rgba(255,255,255,0.02)'}}>
+                      <div className="text-xs mb-1" style={{color:'var(--gray-dim)'}}>{k}</div>
+                      <div className="text-xs font-medium break-all" style={{color:'var(--white)',fontFamily:'var(--font-mono)'}}>{v||'N/A'}</div>
+                    </div>
+                  ))}
+                  {data.whois.registrarNote&&(
+                    <div className="sm:col-span-2 p-3 rounded border-l-2" style={{background:'rgba(255,255,255,0.02)',borderColor:'var(--amber)'}}>
+                      <span className="text-xs" style={{color:'var(--amber)'}}>{data.whois.registrarNote}</span>
+                    </div>
+                  )}
+                  {data.whois.nameservers&&data.whois.nameservers.length>0&&(
+                    <div className="sm:col-span-2 p-3 rounded" style={{background:'rgba(255,255,255,0.02)'}}>
+                      <div className="text-xs mb-1" style={{color:'var(--gray-dim)'}}>Nameservers</div>
+                      {data.whois.nameservers.map((ns,i)=><div key={i} className="text-xs" style={{color:'var(--white)',fontFamily:'var(--font-mono)'}}>{ns}</div>)}
+                    </div>
+                  )}
+                </div>
+              ):<p className="text-xs" style={{color:'var(--gray-dim)'}}>WHOIS data unavailable</p>}
+            </Section>
+
+            {/* 02 — DNS Records */}
+            <Section num={2} title="DNS RECORDS" status={sectionStatus('dns')}>
+              <div className="space-y-3">
+                {[
+                  {label:'A Records',records:data.aRecords},
+                  {label:'AAAA Records',records:data.aaaaRecords},
+                  {label:'MX Records',records:data.mxRecords},
+                  {label:'NS Records',records:data.nsRecords},
+                  {label:'TXT Records',records:data.txtRecords},
+                  {label:'CAA Records',records:data.caaRecords},
+                ].map(({label,records})=>(
+                  <div key={label}>
+                    <div className="text-xs font-semibold mb-1" style={{color:'var(--gray)'}}>{label}</div>
+                    {records&&records.length>0?records.map((r,i)=>(
+                      <div key={i} className="text-xs py-1 break-all" style={{color:'var(--white)',fontFamily:'var(--font-mono)'}}>{(r.data||'').replace(/"/g,'')}</div>
+                    )):<div className="text-xs" style={{color:'var(--gray-dim)'}}>None found</div>}
+                  </div>
+                ))}
+              </div>
+            </Section>
+
+            {/* 03 — Tech Stack */}
+            <Section num={3} title="TECH STACK INTELLIGENCE" status={sectionStatus('tech')}>
+              {data.vendors&&data.vendors.length>0?(
+                <div className="space-y-2">
+                  {data.vendors.map((v,i)=>(
+                    <div key={i} className="flex items-start gap-3 py-2 px-3 rounded" style={{background:'rgba(255,255,255,0.02)'}}>
+                      <span className="dot mt-1 flex-shrink-0" style={{background:SEVERITY_COLORS[v.rv]||'#4b5563'}}/>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-semibold" style={{color:'var(--white)'}}>{v.name}</span>
+                          <span className="text-xs" style={{color:'var(--gray-dim)'}}>|</span>
+                          <span className="text-xs" style={{color:'var(--gray)'}}>{v.cat}</span>
+                          <span className="badge ml-auto" style={{background:SEVERITY_COLORS[v.rv],color:v.rv==='LOW'||v.rv==='MEDIUM'?'#000':'#fff',fontSize:'9px'}}>{v.rv}</span>
+                        </div>
+                        {v.note&&<p className="text-xs mt-1 leading-relaxed" style={{color:'var(--amber)'}}>{v.note}</p>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ):<p className="text-xs" style={{color:'var(--gray-dim)'}}>No vendor signatures detected</p>}
+            </Section>
+
+            {/* 04 — Email Security */}
+            <Section num={4} title="EMAIL SECURITY (SPF / DMARC / DKIM / BIMI)" status={sectionStatus('email')}>
+              <div className="space-y-4">
+                <div>
+                  <div className="text-xs font-semibold mb-1" style={{color:'var(--gray)'}}>SPF</div>
+                  <div className="text-xs p-3 rounded break-all" style={{background:'rgba(255,255,255,0.02)',color:data.spfRaw?'var(--white)':'var(--red-light)',fontFamily:'var(--font-mono)'}}>{data.spfRaw||'No SPF record found'}</div>
+                </div>
+                <div>
+                  <div className="text-xs font-semibold mb-1" style={{color:'var(--gray)'}}>DMARC</div>
+                  <div className="text-xs p-3 rounded break-all" style={{background:'rgba(255,255,255,0.02)',color:data.dmarc?'var(--white)':'var(--red-light)',fontFamily:'var(--font-mono)'}}>{data.dmarc||'No DMARC record found'}</div>
+                </div>
+                <div>
+                  <div className="text-xs font-semibold mb-1" style={{color:'var(--gray)'}}>BIMI</div>
+                  <div className="text-xs p-3 rounded break-all" style={{background:'rgba(255,255,255,0.02)',color:data.bimi?'var(--white)':'var(--gray-dim)',fontFamily:'var(--font-mono)'}}>{data.bimi||'No BIMI record found'}</div>
+                </div>
+                <div>
+                  <div className="text-xs font-semibold mb-2" style={{color:'var(--gray)'}}>DKIM Selectors</div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                    {(data.dkimResults||[]).map((d,i)=>(
+                      <div key={i} className="flex items-center gap-2 py-1 px-2 rounded text-xs" style={{background:d.found?'rgba(34,197,94,0.08)':'rgba(255,255,255,0.02)',fontFamily:'var(--font-mono)'}}>
+                        <span className="dot" style={{background:d.found?'var(--green)':'var(--gray-dark)',width:'6px',height:'6px'}}/>
+                        <span style={{color:d.found?'var(--green)':'var(--gray-dim)'}}>{d.selector}</span>
+                        {d.found&&<span className="ml-auto badge" style={{background:'rgba(34,197,94,0.2)',color:'var(--green)',fontSize:'9px'}}>FOUND</span>}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Section>
+
+            {/* 05 — Subdomains */}
+            <Section num={5} title={`SUBDOMAINS (${(data.subdomains||[]).length})`} status={sectionStatus('subs')}>
+              {data.subdomainsByCategory?(
+                <div className="space-y-4">
+                  {Object.entries(data.subdomainsByCategory).sort((a,b)=>{
+                    const sevA=SUB_CATEGORIES.find(c=>c.label===a[0])?.severity||'INFO';
+                    const sevB=SUB_CATEGORIES.find(c=>c.label===b[0])?.severity||'INFO';
+                    return(SEVERITY_ORDER[sevA]||4)-(SEVERITY_ORDER[sevB]||4);
+                  }).map(([cat,subs])=>{
+                    const catDef=SUB_CATEGORIES.find(c=>c.label===cat);
+                    const sev=catDef?.severity||(cat==='Internal Hostname Leak'?'MEDIUM':'INFO');
+                    return(
+                      <div key={cat}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs font-semibold" style={{color:'var(--white)'}}>{cat}</span>
+                          <span className="badge" style={{background:SEVERITY_COLORS[sev]||'#4b5563',color:sev==='LOW'||sev==='MEDIUM'?'#000':'#fff',fontSize:'9px'}}>{sev}</span>
+                          <span className="text-xs" style={{color:'var(--gray-dim)'}}>({subs.length})</span>
+                        </div>
+                        <div className="space-y-1">
+                          {subs.map((s,i)=>(
+                            <div key={i} className="flex items-center gap-2 py-1 px-2 rounded text-xs" style={{background:'rgba(255,255,255,0.02)',fontFamily:'var(--font-mono)'}}>
+                              <span className="dot" style={{background:SEVERITY_COLORS[s.severity]||'#4b5563',width:'5px',height:'5px'}}/>
+                              <span className="break-all" style={{color:'var(--white)'}}>{s.name}</span>
+                              {s.note&&<span className="ml-auto text-xs italic" style={{color:'var(--amber)'}}>{s.note}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ):<p className="text-xs" style={{color:'var(--gray-dim)'}}>Subdomain enumeration unavailable (crt.sh may be unreachable)</p>}
+            </Section>
+
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="mt-12 pt-4 border-t" style={{borderColor:'var(--bg2)'}}>
+          <p className="text-xs text-center" style={{color:'var(--gray-dark)',fontFamily:'var(--font-mono)'}}>
+            PASSIVE RECON ONLY — NO ACTIVE SCANNING — ALL DATA FROM PUBLIC SOURCES
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
